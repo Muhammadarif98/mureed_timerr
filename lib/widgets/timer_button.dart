@@ -17,7 +17,7 @@ class TimerButton extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.all(4.0),
       decoration: BoxDecoration(
-        color: Colors.grey[200],
+        color: Colors.grey[600],
         borderRadius: BorderRadius.circular(12),
       ),
       child: Material(

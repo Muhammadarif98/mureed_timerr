@@ -39,7 +39,7 @@ class TimerControls extends StatelessWidget {
                 size: 24,
                 color: (!isRunning && isTimerSet) 
                     ? const Color(0xFF009688) 
-                    : Colors.grey,
+                    : Colors.grey[600],
               ),
             ),
           ),

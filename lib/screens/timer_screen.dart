@@ -194,14 +194,14 @@ class _TimerScreenState extends State<TimerScreen> with WidgetsBindingObserver {
     
     return Container(
       width: 80,
-      height: 60,
+      height: 55,
       decoration: BoxDecoration(
-        color: const Color(0xFFEEEEEE),
+        color: const Color(0xFFCDCDCD),
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 4,
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 0.2,
             offset: const Offset(0, 2),
           ),
         ],
@@ -249,14 +249,14 @@ class _TimerScreenState extends State<TimerScreen> with WidgetsBindingObserver {
   }) {
     return Container(
       width: 80,
-      height: 60,
+      height: 55,
       decoration: BoxDecoration(
-        color: const Color(0xFFEEEEEE),
+        color: const Color(0xFFC3C3C3),
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 4,
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 0.2,
             offset: const Offset(0, 2),
           ),
         ],
