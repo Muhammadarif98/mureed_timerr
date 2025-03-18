@@ -21,6 +21,8 @@ class TimerService extends ChangeNotifier {
   bool _soundEnabled = true;
   bool _vibrationEnabled = true;
   String? _soundFilePath;
+  DateTime? _lastUpdateTime;
+  int _lastNotificationUpdateSecond = -1;
 
   bool get isRunning => _isRunning;
   bool get isCompleted => _timerCompleted;
@@ -42,46 +44,75 @@ class TimerService extends ChangeNotifier {
     await _loadSettings();
   }
 
-  // Метод для подготовки звукового файла
-  Future<void> _prepareSoundFile() async {
-    try {
-      // Создаем звуковой файл в папке приложения, если он еще не существует
-      final directory = await getApplicationDocumentsDirectory();
-      _soundFilePath = '${directory.path}/timer_complete.mp3';
-      
-      final file = File(_soundFilePath!);
-      if (!file.existsSync()) {
-        // Попытка загрузить звуковой файл из разных путей
-        ByteData? data;
-        try {
-          print('Попытка загрузить звук из assets/sounds/timer_complete.mp3');
-          data = await rootBundle.load('assets/sounds/timer_complete.mp3');
-          print('Звук успешно загружен из assets/sounds');
-        } catch (e) {
-          print('Не удалось загрузить звук из assets/sounds: $e');
-          try {
-            print('Попытка загрузить звук из lib/assets/sounds/timer_complete.mp3');
-            data = await rootBundle.load('lib/assets/sounds/timer_complete.mp3');
-            print('Звук успешно загружен из lib/assets/sounds');
-          } catch (e) {
-            print('Не удалось загрузить звук из lib/assets/sounds: $e');
-          }
-        }
+  Future<void> _initNotifications() async {
+    const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const iosSettings = DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+    );
+    const initSettings = InitializationSettings(android: androidSettings, iOS: iosSettings);
+    
+    // Clear any existing notifications when starting the app
+    await _notifications.cancelAll();
+    
+    // Configure notification handling
+    await _notifications.initialize(
+      initSettings,
+      onDidReceiveNotificationResponse: (NotificationResponse response) {
+        print('Received response: ${response.notificationResponseType}, id: ${response.actionId}, payload: ${response.payload}');
         
-        if (data != null) {
-          List<int> bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
-          await file.writeAsBytes(bytes);
-          print('Звуковой файл создан: $_soundFilePath');
-        } else {
-          print('Звуковой файл не найден в ресурсах');
-          _soundFilePath = null;
+        // Handle action buttons
+        if (response.actionId != null) {
+          _handleNotificationAction(response.actionId!);
         }
-      } else {
-        print('Звуковой файл уже существует: $_soundFilePath');
-      }
-    } catch (e) {
-      print('Ошибка при подготовке звукового файла: $e');
-      _soundFilePath = null;
+      },
+    );
+    
+    // Set up additional action handlers for Android
+    final androidPlugin = _notifications
+      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+      
+    if (androidPlugin != null) {
+      // Create high-priority notification channel
+      await androidPlugin.createNotificationChannel(
+        const AndroidNotificationChannel(
+          'timer_channel',
+          'Timer',
+          description: 'Timer notifications',
+          importance: Importance.max,
+          enableVibration: false,
+          playSound: false,
+          showBadge: true,
+        ),
+      );
+    
+      // Request permissions
+      await androidPlugin.requestNotificationsPermission();
+    }
+  }
+
+  void _handleNotificationAction(String action) {
+    print('Handling notification action: $action');
+    
+    // Perform actions based on the notification action
+    switch (action) {
+      case 'pause_action':
+        print('Processing pause action');
+        pause();
+        break;
+      case 'resume_action':
+        print('Processing resume action');
+        start();
+        break;
+      case 'reset_action':
+        print('Processing reset action');
+        reset();
+        // Cancel the notification if reset was pressed
+        _notifications.cancel(0);
+        break;
+      default:
+        print('Unknown action: $action');
     }
   }
 
@@ -98,7 +129,6 @@ class TimerService extends ChangeNotifier {
   }
 
   void setVibrationEnabled(bool value) {
-    // Обновляем настройку вибрации
     _vibrationEnabled = value;
     _saveSettings();
     notifyListeners();
@@ -110,116 +140,35 @@ class TimerService extends ChangeNotifier {
     await prefs.setBool('vibrationEnabled', _vibrationEnabled);
   }
 
-  Future<void> _initNotifications() async {
-    const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const iosSettings = DarwinInitializationSettings(
-      requestAlertPermission: true,
-      requestBadgePermission: true,
-      requestSoundPermission: true,
-    );
-    const initSettings = InitializationSettings(android: androidSettings, iOS: iosSettings);
-    
-    await _notifications.initialize(
-      initSettings,
-      onDidReceiveNotificationResponse: (NotificationResponse response) {
-        print('Получено действие уведомления: ${response.actionId ?? 'нет actionId'}, payload: ${response.payload}');
-        _handleNotificationAction(response.actionId ?? response.payload ?? '');
-      },
-    );
-    
-    // Создаем только один канал для всех уведомлений без вибрации
-    const AndroidNotificationChannel timerChannel = AndroidNotificationChannel(
-      'timer_channel',
-      'Timer',
-      description: 'Timer notifications',
-      importance: Importance.high,
-      enableVibration: false,
-      enableLights: false,
-      playSound: false,
-    );
-    
-    // Регистрируем канал уведомлений
-    await _notifications
-      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-      ?.createNotificationChannel(timerChannel);
-    
-    // Запрашиваем разрешения для Android 13+
-    await _requestPermissions();
-  }
-  
-  Future<void> _requestPermissions() async {
-    // Запрос разрешений для Android 13 и выше
-    final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-        FlutterLocalNotificationsPlugin();
-    
-    await flutterLocalNotificationsPlugin
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.requestNotificationsPermission();
-  }
-
-  void _handleNotificationAction(String action) {
-    print('Обработка действия: $action');
-    if (action == 'pause_action') {
-      pause();
-    } else if (action == 'resume_action') {
-      start();
-    } else if (action == 'reset_action') {
-      reset();
-      _notifications.cancel(0); // Удаляем уведомление при сбросе
-    }
-  }
-
   Future<void> _loadSavedTimer() async {
     final prefs = await SharedPreferences.getInstance();
     _currentSeconds = prefs.getInt('currentSeconds') ?? 0;
     _totalSeconds = prefs.getInt('totalSeconds') ?? 0;
     _isRunning = prefs.getBool('isRunning') ?? false;
-    _timerCompleted = prefs.getBool('timerCompleted') ?? false;
-    
-    if (_isRunning) {
-      final lastSaved = prefs.getInt('lastSavedTime') ?? DateTime.now().millisecondsSinceEpoch;
-      final now = DateTime.now().millisecondsSinceEpoch;
-      final elapsedSeconds = (now - lastSaved) ~/ 1000;
-      _currentSeconds = (_currentSeconds - elapsedSeconds).clamp(0, _totalSeconds);
+    _lastUpdateTime = DateTime.fromMillisecondsSinceEpoch(
+      prefs.getInt('lastUpdateTime') ?? DateTime.now().millisecondsSinceEpoch
+    );
+
+    if (_isRunning && _currentSeconds > 0) {
+      final now = DateTime.now();
+      final difference = now.difference(_lastUpdateTime!).inSeconds;
+      
+      // Adjust current time based on elapsed time since last update
+      if (difference > 0) {
+        _currentSeconds = (_currentSeconds - difference).clamp(0, _totalSeconds);
+      }
       
       if (_currentSeconds > 0) {
-        start();
+        // Don't call start() here to avoid notification flicker
+        // Just set up the timer and update UI
+        _startTimerWithoutNotification();
       } else {
-        _isRunning = false;
-        _timerCompleted = true;
-        await _saveTimerState();
-        onComplete?.call();
+        _completeTimer();
       }
     }
   }
 
-  Future<void> _saveTimerState() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('currentSeconds', _currentSeconds);
-    await prefs.setInt('totalSeconds', _totalSeconds);
-    await prefs.setBool('isRunning', _isRunning);
-    await prefs.setBool('timerCompleted', _timerCompleted);
-    await prefs.setInt('lastSavedTime', DateTime.now().millisecondsSinceEpoch);
-  }
-
-  void setTime(int minutes) {
-    _totalSeconds = minutes * 60;
-    _currentSeconds = _totalSeconds;
-    _isRunning = false;
-    _timerCompleted = false;
-    if (_timer?.isActive ?? false) {
-      _timer?.cancel();
-    }
-    _saveTimerState();
-    onTick?.call();
-    _updateNotification();
-    notifyListeners();
-  }
-
-  void start() {
-    if (_currentSeconds <= 0) return;
-    
+  void _startTimerWithoutNotification() {
     _isRunning = true;
     _timerCompleted = false;
     _timer?.cancel();
@@ -228,24 +177,90 @@ class TimerService extends ChangeNotifier {
         _completeTimer();
       } else {
         _currentSeconds--;
-        onTick?.call();
         _saveTimerState();
         
-        // Обновляем уведомление каждую секунду
+        // Always update notification on every second
         _updateNotification();
+        
+        onTick?.call();
         notifyListeners();
       }
     });
+    notifyListeners();
+  }
+
+  // Update every second without flicker
+  bool _shouldUpdateNotification() {
+    // Update on every second
+    return true;
+  }
+
+  Future<void> _saveTimerState() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('currentSeconds', _currentSeconds);
+    await prefs.setInt('totalSeconds', _totalSeconds);
+    await prefs.setBool('isRunning', _isRunning);
+    await prefs.setInt('lastUpdateTime', DateTime.now().millisecondsSinceEpoch);
+  }
+
+  void setTime(int minutes) {
+    _totalSeconds = minutes * 60;
+    _currentSeconds = _totalSeconds;
+    _isRunning = false;
+    _timerCompleted = false;
+    _timer?.cancel();
     _saveTimerState();
+    _lastNotificationUpdateSecond = -1; // Reset notification update tracker
     _updateNotification();
     notifyListeners();
   }
 
+  void start() {
+    if (_currentSeconds <= 0) return;
+
+    // If already running, don't restart
+    if (_isRunning) return;
+
+    _isRunning = true;
+    _timerCompleted = false;
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_currentSeconds <= 0) {
+        _completeTimer();
+      } else {
+        _currentSeconds--;
+        _saveTimerState();
+        
+        // Always update notification on every second
+        _updateNotification();
+        
+        onTick?.call();
+        notifyListeners();
+      }
+    });
+    
+    // Save state immediately
+    _saveTimerState();
+    
+    // Always update notification on state change
+    _updateNotification();
+    
+    notifyListeners();
+  }
+
   void pause() {
+    // If not running, nothing to pause
+    if (!_isRunning) return;
+    
     _isRunning = false;
     _timer?.cancel();
+    
+    // Save state immediately
     _saveTimerState();
+    
+    // Always update notification on state change
     _updateNotification();
+    
     notifyListeners();
   }
 
@@ -254,11 +269,92 @@ class TimerService extends ChangeNotifier {
     _isRunning = false;
     _timerCompleted = false;
     _timer?.cancel();
-    onTick?.call();
-    _saveTimerState();
-    _updateNotification();
-    _notifications.cancel(0); // Удаляем уведомление при сбросе
-    notifyListeners();
+    
+    // Cancel the notification first before updating
+    _notifications.cancel(0).then((_) {
+      // Save state immediately
+      _saveTimerState();
+      
+      // Reset notification update tracker
+      _lastNotificationUpdateSecond = -1;
+      
+      // If there's still time remaining, show a reset notification
+      if (_totalSeconds > 0) {
+        _updateNotification();
+      }
+      
+      // Notify UI
+      onTick?.call();
+      notifyListeners();
+    });
+  }
+
+  Future<void> _updateNotification() async {
+    try {
+      // Cancel notification if timer is done and not running
+      if (_currentSeconds <= 0 && !_isRunning) {
+        await _notifications.cancel(0);
+        print('Cancelled timer notification (timer at 0)');
+        return;
+      }
+
+      final List<AndroidNotificationAction> actions = [];
+      
+      // Add appropriate action button based on timer state
+      if (_isRunning) {
+        print('Adding PAUSE button to notification');
+        actions.add(const AndroidNotificationAction(
+          'pause_action',
+          'Пауза',
+          showsUserInterface: false,
+        ));
+      } else {
+        print('Adding RESUME button to notification');
+        actions.add(const AndroidNotificationAction(
+          'resume_action',
+          'Возобновить',
+          showsUserInterface: false,
+        ));
+      }
+      
+      // Always show reset button
+      print('Adding RESET button to notification');
+      actions.add(const AndroidNotificationAction(
+        'reset_action',
+        'Сброс',
+        showsUserInterface: false,
+      ));
+
+      final androidDetails = AndroidNotificationDetails(
+        'timer_channel',
+        'Timer',
+        channelDescription: 'Timer notifications',
+        importance: Importance.max,
+        priority: Priority.max,
+        ongoing: true,
+        autoCancel: false,
+        enableVibration: false,
+        playSound: false,
+        onlyAlertOnce: true, // Prevents sound/vibration on every update
+        actions: actions,
+        ticker: 'Timer ticking',
+        fullScreenIntent: false, // Avoid taking over the screen
+        color: const Color.fromARGB(255, 0, 150, 136), // Teal color
+        category: AndroidNotificationCategory.service, // Treat as service notification
+      );
+
+      final details = NotificationDetails(android: androidDetails);
+
+      await _notifications.show(
+        0,
+        _isRunning ? 'Таймер работает' : 'Таймер на паузе',
+        'Осталось: $timeLeft',
+        details,
+      );
+      print('Notification updated: $_currentSeconds seconds left');
+    } catch (e) {
+      print('Notification error: $e');
+    }
   }
 
   Future<void> _completeTimer() async {
@@ -266,250 +362,129 @@ class TimerService extends ChangeNotifier {
     _timerCompleted = true;
     _timer?.cancel();
     
-    // Сохраняем состояние таймера
     await _saveTimerState();
     
-    // Отменяем активное уведомление таймера
+    // Always cancel the timer notification first
     await _notifications.cancel(0);
     
-    // Добавляем вибрацию при завершении таймера
-    await _vibrate();
+    // Small delay to ensure the timer notification is dismissed
+    await Future.delayed(const Duration(milliseconds: 500));
     
-    // Воспроизводим звук только если он включен
+    if (_vibrationEnabled) {
+      await _vibrate();
+    }
+    
     if (_soundEnabled) {
       await _playCompletionSound();
     }
     
-    // Показываем простое уведомление о завершении
-    await _showSimpleCompletionNotification();
+    await _showCompletionNotification();
     
     onComplete?.call();
     notifyListeners();
   }
 
+  Future<void> _showCompletionNotification() async {
+    // Create a separate channel for completion notifications
+    const AndroidNotificationChannel completionChannel = AndroidNotificationChannel(
+      'timer_completion_channel',
+      'Timer Completion',
+      description: 'Timer completion notifications',
+      importance: Importance.high,
+      enableVibration: false,
+      playSound: false,
+    );
+
+    // Register the completion channel
+    await _notifications
+      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(completionChannel);
+
+    // Show completion notification
+    final androidDetails = AndroidNotificationDetails(
+      'timer_completion_channel',
+      'Timer Completion',
+      channelDescription: 'Timer completion notifications',
+      importance: Importance.high,
+      priority: Priority.high,
+      autoCancel: true,
+      enableVibration: false,
+      playSound: false,
+    );
+
+    final details = NotificationDetails(android: androidDetails);
+
+    await _notifications.show(
+      1,  // Different ID from the timer notification
+      'Таймер завершен',
+      'Время истекло!',
+      details,
+    );
+  }
+
   Future<void> _vibrate() async {
-    // Проверяем, включена ли вибрация в настройках
     if (!_vibrationEnabled) return;
     
     try {
-      // Используем системную вибрацию через HapticFeedback
-      // для создания трех вибраций при завершении
       await HapticFeedback.vibrate();
       await Future.delayed(const Duration(milliseconds: 400));
       await HapticFeedback.vibrate();
       await Future.delayed(const Duration(milliseconds: 400)); 
       await HapticFeedback.vibrate();
-      
-      print('Вибрация при завершении таймера');
     } catch (e) {
-      print('Ошибка вибрации: $e');
+      print('Vibration error: $e');
     }
   }
 
-  Future<void> _updateNotification() async {
-    if (_timerCompleted) {
-      return; // Не обновляем обычное уведомление если таймер уже завершен
-    }
-    
-    if (!_isRunning && _currentSeconds <= 0) {
-      // Если таймер не запущен и время 0, удаляем уведомление
-      await _notifications.cancel(0);
-      return;
-    }
-    
+  Future<void> _prepareSoundFile() async {
     try {
-      // Добавляем кнопки действий в уведомление
-      List<AndroidNotificationAction> actions = [];
+      final directory = await getApplicationDocumentsDirectory();
+      _soundFilePath = '${directory.path}/timer_complete.mp3';
       
-      if (_isRunning) {
-        actions.add(const AndroidNotificationAction(
-          'pause_action',
-          'Пауза',
-          icon: DrawableResourceAndroidBitmap('ic_pause'),
-          showsUserInterface: false,
-          cancelNotification: false,
-        ));
-      } else {
-        actions.add(const AndroidNotificationAction(
-          'resume_action',
-          'Старт',
-          icon: DrawableResourceAndroidBitmap('ic_play'),
-          showsUserInterface: false,
-          cancelNotification: false,
-        ));
-      }
-      
-      actions.add(const AndroidNotificationAction(
-        'reset_action',
-        'Сброс',
-        icon: DrawableResourceAndroidBitmap('ic_reset'),
-        showsUserInterface: false,
-        cancelNotification: true,
-      ));
-      
-      // Настройки без вибрации
-      final androidDetails = AndroidNotificationDetails(
-        'timer_channel',
-        'Timer',
-        channelDescription: 'Timer notifications',
-        importance: Importance.high,
-        priority: Priority.high,
-        ongoing: true,
-        autoCancel: false,
-        showWhen: false,
-        actions: actions,
-        enableVibration: false,
-        playSound: false,
-      );
-      
-      const iosDetails = DarwinNotificationDetails(
-        presentAlert: true,
-        presentBadge: true,
-        presentSound: false,
-      );
-      
-      final details = NotificationDetails(android: androidDetails, iOS: iosDetails);
-      
-      if (_isRunning || (_currentSeconds > 0 && _totalSeconds > 0)) {
-        await _notifications.show(
-          0,
-          'Таймер активен',
-          'Осталось: $timeLeft',
-          details,
-          payload: 'timer',
-        );
+      final file = File(_soundFilePath!);
+      if (!file.existsSync()) {
+        ByteData? data;
+        try {
+          data = await rootBundle.load('assets/sounds/timer_complete.mp3');
+        } catch (e) {
+          try {
+            data = await rootBundle.load('lib/assets/sounds/timer_complete.mp3');
+          } catch (e) {
+            print('Sound file not found: $e');
+          }
+        }
+        
+        if (data != null) {
+          List<int> bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+          await file.writeAsBytes(bytes);
+        } else {
+          _soundFilePath = null;
+        }
       }
     } catch (e) {
-      print('Ошибка при обновлении уведомления: $e');
-    }
-  }
-
-  Future<void> _showSimpleCompletionNotification() async {
-    try {
-      // Настройки Android-уведомления (простое, без действий, без вибрации)
-      final androidDetails = AndroidNotificationDetails(
-        'timer_channel',
-        'Timer',
-        channelDescription: 'Timer notifications',
-        importance: Importance.high,
-        priority: Priority.high,
-        ongoing: false,
-        autoCancel: true,
-        enableVibration: false,
-        playSound: false, // Звук мы воспроизводим отдельно через AudioPlayer
-      );
-      
-      final iosDetails = DarwinNotificationDetails(
-        presentAlert: true,
-        presentBadge: true,
-        presentSound: false, // Звук мы воспроизводим отдельно
-      );
-      
-      final details = NotificationDetails(android: androidDetails, iOS: iosDetails);
-      
-      // Показываем простое уведомление о завершении
-      await _notifications.show(
-        0, // Используем тот же ID
-        'Таймер завершен!',
-        'Время вышло!',
-        details,
-      );
-    } catch (e) {
-      print('Ошибка при отправке уведомления о завершении: $e');
+      print('Sound file preparation error: $e');
+      _soundFilePath = null;
     }
   }
 
   Future<void> _playCompletionSound() async {
-    // Проверяем, включен ли звук
-    if (!_soundEnabled) {
-      print('Звук отключен в настройках');
-      return;
-    }
+    if (!_soundEnabled) return;
 
     try {
-      print('Начинаем воспроизведение звука таймера...');
-      
-      // Устанавливаем громкость на максимум
       await _audioPlayer.setVolume(1.0);
-      
-      // Останавливаем любое текущее воспроизведение
       await _audioPlayer.stop();
-      
-      // Отключаем режим цикличного воспроизведения
       await _audioPlayer.setReleaseMode(ReleaseMode.release);
       
-      // Воспроизводим звук из Android ресурса
-      print('Пробуем воспроизвести из Android ресурсов: timer_complete.mp3');
-      await _audioPlayer.play(
-        AssetSource('sounds/timer_complete.mp3'), 
-        mode: PlayerMode.lowLatency
-      );
-      print('Запущено воспроизведение звука из ресурса');
-      
-      // Ждем небольшую паузу для начала воспроизведения
-      await Future.delayed(Duration(milliseconds: 500));
-      
-      // Регистрируем слушатель завершения для дебага
-      _audioPlayer.onPlayerComplete.listen((event) {
-        print('Воспроизведение звука завершено успешно');
-      });
+      // Simplify sound playing logic - just try the asset source
+      await _audioPlayer.play(AssetSource('sounds/timer_complete.mp3'));
     } catch (e) {
-      print('Ошибка воспроизведения звука из ресурса: $e');
-      
-      // План Б - воспроизведение из файла
-      try {
-        // Создаем локальную копию звукового файла в кэше приложения
-        final temporaryDir = await getTemporaryDirectory();
-        final tempSoundFile = File('${temporaryDir.path}/timer_complete_temp.mp3');
-        
-        // Проверяем, существует ли файл уже
-        if (!tempSoundFile.existsSync()) {
-          try {
-            // Загружаем файл из ресурсов
-            final data = await rootBundle.load('assets/sounds/timer_complete.mp3');
-            await tempSoundFile.writeAsBytes(
-              data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes), 
-              flush: true
-            );
-            print('Звуковой файл скопирован во временную директорию: ${tempSoundFile.path}');
-          } catch (e) {
-            print('Ошибка копирования звукового файла: $e');
-            throw Exception('Не удалось скопировать звуковой файл');
-          }
-        }
-        
-        // Проверяем, что файл существует перед воспроизведением
-        if (!tempSoundFile.existsSync()) {
-          throw Exception('Звуковой файл не существует на диске');
-        }
-        
-        // Воспроизводим звук из временного файла
-        final source = DeviceFileSource(tempSoundFile.path);
-        print('Запускаем воспроизведение из временного файла: ${tempSoundFile.path}');
-        await _audioPlayer.play(source);
-        print('Звук запущен из временного файла');
-      } catch (e2) {
-        print('Ошибка воспроизведения из временного файла: $e2');
-        
-        // План В - попытка воспроизведения через URI к raw ресурсам
-        try {
-          print('Попытка воспроизведения через нативные ресурсы');
-          final uri = Uri(
-            scheme: 'android.resource', 
-            host: 'mureed_timer', 
-            path: '/raw/timer_complete'
-          );
-          await _audioPlayer.play(DeviceFileSource(uri.toString()));
-          print('Запущено воспроизведение через нативные ресурсы Android');
-        } catch (e3) {
-          print('Критическая ошибка воспроизведения звука: $e3');
-        }
-      }
+      print('Sound playback error: $e');
     }
   }
 
   void dispose() {
     _timer?.cancel();
     _audioPlayer.dispose();
+    super.dispose();
   }
 } 
