@@ -8,13 +8,13 @@ class TimerControls extends StatelessWidget {
   final VoidCallback onReset;
 
   const TimerControls({
-    Key? key,
+    super.key,
     required this.isRunning,
     required this.isTimerSet,
     required this.onStart,
     required this.onPause,
     required this.onReset,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

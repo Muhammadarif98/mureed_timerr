@@ -17,7 +17,7 @@ class _TimerScreenState extends State<TimerScreen> with WidgetsBindingObserver {
   bool _soundEnabled = true;
   int? _selectedMinutes;
   
-  final List<int> _presetMinutes = [1, 5, 10, 15, 20, 30, 45, 60];
+  final List<int> _presetMinutes = [3, 5, 10, 15, 20, 30, 45, 60];
 
   @override
   void initState() {
@@ -56,43 +56,6 @@ class _TimerScreenState extends State<TimerScreen> with WidgetsBindingObserver {
       if (totalSeconds > 0) {
         _selectedMinutes = totalSeconds ~/ 60;
       }
-    });
-  }
-
-  Future<void> _saveSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('vibrationEnabled', _vibrationEnabled);
-    await prefs.setBool('soundEnabled', _soundEnabled);
-    
-    // Также обновляем настройки в сервисе таймера
-    _timerService.setVibrationEnabled(_vibrationEnabled);
-    _timerService.setSoundEnabled(_soundEnabled);
-  }
-
-  void _handleTimerButton(int minutes) {
-    setState(() {
-      _selectedMinutes = minutes;
-    });
-    _timerService.setTime(minutes);
-    _timerService.start();
-  }
-
-  void _handleStart() {
-    if (_selectedMinutes != null) {
-      _timerService.start();
-      setState(() {});
-    }
-  }
-
-  void _handlePause() {
-    _timerService.pause();
-    setState(() {});
-  }
-
-  void _handleReset() {
-    _timerService.reset();
-    setState(() {
-      _selectedMinutes = null;
     });
   }
 

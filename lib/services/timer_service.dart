@@ -23,6 +23,7 @@ class TimerService extends ChangeNotifier {
   String? _soundFilePath;
   DateTime? _lastUpdateTime;
   int _lastNotificationUpdateSecond = -1;
+  static const platform = MethodChannel('com.example.mureed_timer/battery_optimization');
 
   bool get isRunning => _isRunning;
   bool get isCompleted => _timerCompleted;
@@ -37,11 +38,21 @@ class TimerService extends ChangeNotifier {
     return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
+  Future<void> _requestBatteryOptimizationPermission() async {
+    try {
+      final bool result = await platform.invokeMethod('requestBatteryOptimizationPermission');
+      print('Battery optimization permission result: $result');
+    } catch (e) {
+      print('Error requesting battery optimization permission: $e');
+    }
+  }
+
   Future<void> init() async {
     await _initNotifications();
     await _prepareSoundFile();
     await _loadSavedTimer();
     await _loadSettings();
+    await _requestBatteryOptimizationPermission();
   }
 
   Future<void> _initNotifications() async {
@@ -99,11 +110,15 @@ class TimerService extends ChangeNotifier {
     switch (action) {
       case 'pause_action':
         print('Processing pause action');
-        pause();
+        if (_isRunning) {
+          pause();
+        }
         break;
       case 'resume_action':
         print('Processing resume action');
-        start();
+        if (!_isRunning && _currentSeconds > 0) {
+          start();
+        }
         break;
       case 'reset_action':
         print('Processing reset action');
@@ -114,6 +129,9 @@ class TimerService extends ChangeNotifier {
       default:
         print('Unknown action: $action');
     }
+    
+    // Update notification after action
+    _updateNotification();
   }
 
   Future<void> _loadSettings() async {
@@ -159,19 +177,22 @@ class TimerService extends ChangeNotifier {
       }
       
       if (_currentSeconds > 0) {
-        // Don't call start() here to avoid notification flicker
-        // Just set up the timer and update UI
-        _startTimerWithoutNotification();
+        // Start the timer in background mode
+        _startTimerInBackground();
       } else {
         _completeTimer();
       }
     }
   }
 
-  void _startTimerWithoutNotification() {
+  void _startTimerInBackground() {
     _isRunning = true;
     _timerCompleted = false;
     _timer?.cancel();
+    
+    // Start foreground service for Android
+    _startForegroundService();
+    
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_currentSeconds <= 0) {
         _completeTimer();
@@ -189,30 +210,29 @@ class TimerService extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Update every second without flicker
-  bool _shouldUpdateNotification() {
-    // Update on every second
-    return true;
-  }
-
-  Future<void> _saveTimerState() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('currentSeconds', _currentSeconds);
-    await prefs.setInt('totalSeconds', _totalSeconds);
-    await prefs.setBool('isRunning', _isRunning);
-    await prefs.setInt('lastUpdateTime', DateTime.now().millisecondsSinceEpoch);
-  }
-
-  void setTime(int minutes) {
-    _totalSeconds = minutes * 60;
-    _currentSeconds = _totalSeconds;
-    _isRunning = false;
-    _timerCompleted = false;
-    _timer?.cancel();
-    _saveTimerState();
-    _lastNotificationUpdateSecond = -1; // Reset notification update tracker
-    _updateNotification();
-    notifyListeners();
+  Future<void> _startForegroundService() async {
+    final androidPlugin = _notifications
+      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+      
+    if (androidPlugin != null) {
+      await androidPlugin.startForegroundService(
+        0, // notification id
+        const AndroidNotificationDetails(
+          'timer_channel',
+          'Timer',
+          channelDescription: 'Timer notifications',
+          importance: Importance.max,
+          priority: Priority.max,
+          ongoing: true,
+          autoCancel: false,
+          enableVibration: false,
+          playSound: false,
+          onlyAlertOnce: true,
+          category: AndroidNotificationCategory.service,
+        ) as String?,
+        'Таймер работает', // title
+      );
+    }
   }
 
   void start() {
@@ -224,6 +244,10 @@ class TimerService extends ChangeNotifier {
     _isRunning = true;
     _timerCompleted = false;
     _timer?.cancel();
+    
+    // Start foreground service for Android
+    _startForegroundService();
+    
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_currentSeconds <= 0) {
         _completeTimer();
@@ -255,6 +279,9 @@ class TimerService extends ChangeNotifier {
     _isRunning = false;
     _timer?.cancel();
     
+    // Stop foreground service for Android
+    _stopForegroundService();
+    
     // Save state immediately
     _saveTimerState();
     
@@ -264,11 +291,23 @@ class TimerService extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> _stopForegroundService() async {
+    final androidPlugin = _notifications
+      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+      
+    if (androidPlugin != null) {
+      await androidPlugin.stopForegroundService();
+    }
+  }
+
   void reset() {
     _currentSeconds = _totalSeconds;
     _isRunning = false;
     _timerCompleted = false;
     _timer?.cancel();
+    
+    // Stop foreground service for Android
+    _stopForegroundService();
     
     // Cancel the notification first before updating
     _notifications.cancel(0).then((_) {
@@ -308,7 +347,7 @@ class TimerService extends ChangeNotifier {
           'Пауза',
           showsUserInterface: false,
         ));
-      } else {
+      } else if (_currentSeconds > 0) {
         print('Adding RESUME button to notification');
         actions.add(const AndroidNotificationAction(
           'resume_action',
@@ -317,13 +356,15 @@ class TimerService extends ChangeNotifier {
         ));
       }
       
-      // Always show reset button
-      print('Adding RESET button to notification');
-      actions.add(const AndroidNotificationAction(
-        'reset_action',
-        'Сброс',
-        showsUserInterface: false,
-      ));
+      // Always show reset button if there's time set
+      if (_totalSeconds > 0) {
+        print('Adding RESET button to notification');
+        actions.add(const AndroidNotificationAction(
+          'reset_action',
+          'Сброс',
+          showsUserInterface: false,
+        ));
+      }
 
       final androidDetails = AndroidNotificationDetails(
         'timer_channel',
@@ -335,12 +376,12 @@ class TimerService extends ChangeNotifier {
         autoCancel: false,
         enableVibration: false,
         playSound: false,
-        onlyAlertOnce: true, // Prevents sound/vibration on every update
+        onlyAlertOnce: true,
         actions: actions,
         ticker: 'Timer ticking',
-        fullScreenIntent: false, // Avoid taking over the screen
-        color: const Color.fromARGB(255, 0, 150, 136), // Teal color
-        category: AndroidNotificationCategory.service, // Treat as service notification
+        fullScreenIntent: false,
+        color: const Color.fromARGB(255, 0, 150, 136),
+        category: AndroidNotificationCategory.service,
       );
 
       final details = NotificationDetails(android: androidDetails);
@@ -351,9 +392,17 @@ class TimerService extends ChangeNotifier {
         'Осталось: $timeLeft',
         details,
       );
-      print('Notification updated: $_currentSeconds seconds left');
+      print('Notification updated: $_currentSeconds seconds left, isRunning: $_isRunning');
     } catch (e) {
       print('Notification error: $e');
+      // Try to recover by cancelling and recreating the notification
+      try {
+        await _notifications.cancel(0);
+        await Future.delayed(const Duration(milliseconds: 100));
+        await _updateNotification();
+      } catch (e) {
+        print('Failed to recover from notification error: $e');
+      }
     }
   }
 
@@ -480,6 +529,26 @@ class TimerService extends ChangeNotifier {
     } catch (e) {
       print('Sound playback error: $e');
     }
+  }
+
+  Future<void> _saveTimerState() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('currentSeconds', _currentSeconds);
+    await prefs.setInt('totalSeconds', _totalSeconds);
+    await prefs.setBool('isRunning', _isRunning);
+    await prefs.setInt('lastUpdateTime', DateTime.now().millisecondsSinceEpoch);
+  }
+
+  void setTime(int minutes) {
+    _totalSeconds = minutes * 60;
+    _currentSeconds = _totalSeconds;
+    _isRunning = false;
+    _timerCompleted = false;
+    _timer?.cancel();
+    _saveTimerState();
+    _lastNotificationUpdateSecond = -1; // Reset notification update tracker
+    _updateNotification();
+    notifyListeners();
   }
 
   void dispose() {

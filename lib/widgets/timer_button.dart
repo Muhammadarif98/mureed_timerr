@@ -6,11 +6,11 @@ class TimerButton extends StatelessWidget {
   final bool isEnabled;
 
   const TimerButton({
-    Key? key,
+    super.key,
     required this.minutes,
     required this.onPressed,
     this.isEnabled = true,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

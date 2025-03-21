@@ -6,11 +6,11 @@ class TimerToggle extends StatelessWidget {
   final ValueChanged<bool> onChanged;
 
   const TimerToggle({
-    Key? key,
+    super.key,
     required this.label,
     required this.value,
     required this.onChanged,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
